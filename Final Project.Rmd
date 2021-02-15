@@ -1,0 +1,285 @@
+---
+title: "Final Project"
+author: "Natalie Pham"
+date: "12/9/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+# 1. Background {.tabset}
+
+  The data set below was found on Kaggle, seperately by year. The data set is about flight information of different airline carriers domestically in the US. The flight information includes flight date, airline carriers, origin airports, destination airports, arrival delay, departure delay, weather delay, cancelled-code, etc. The original data set was way before 2015 to June 2020. However, I choose the 5 most recent years to do forecast arrival delays because I think it will yield more accuracy to predict arrival delays for the next 3 years after 2020. Another reason I choose the most recent 5 years is because beginning of 2020 is the pandemic, resulted in airlines' activities have been drastically dropped. Using recent data will not overforecast after June 2020. 
+
+# 2. EDA
+```{r}
+d15 <- read.csv("2015.csv")
+d16 <- read.csv("2016.csv")
+d17 <- read.csv("2017.csv")
+d18 <- read.csv("2018.csv")
+d19 <- read.csv("2019.csv")
+d20 <- read.csv("20.csv")
+```
+```{r}
+summary(d15)
+summary(d16)
+summary(d17)
+summary(d18)
+summary(d19)
+summary(d20)
+```
+
+
+- Row binding to create data frame for time series using 'ARR_DELAY' to forecast
+```{r}
+d15 <- d15[,c("FL_DATE","ARR_DELAY")]
+d16 <- d16[,c("FL_DATE","ARR_DELAY")]
+d17 <- d17[,c("FL_DATE","ARR_DELAY")]
+d18 <- d18[,c("FL_DATE","ARR_DELAY")]
+d19 <- d19[,c("FL_DATE","ARR_DELAY")]
+d20 <- d20[,c("FL_DATE","ARR_DELAY")]
+
+library(dplyr)
+library(forecast)
+library(backports)
+library(tidyverse)
+library(fpp2)
+library(seasonal)
+
+d <- rbind(d15,d16,d17,d18,d19,d20)
+t <- d %>% filter(ARR_DELAY != "NA")
+```
+
+
+- Transform date format
+```{r}
+date_change <- as.Date(t$FL_DATE)
+y<- as.POSIXct(date_change, format = "%m/%d/%Y")
+
+t$year <- format(y, "%Y")
+t$month <- format(y,"%b")
+```
+```{r}
+t2 <- t[,c(3,4,2)]
+```
+
+```{r}
+s <- ts(data = t2$ARR_DELAY, start = c(2014,12), end = c(2020,6), frequency = 12)
+```
+
+
+
+  Plot total arrival delay times over the years
+```{r}
+autoplot(s) + ylab("Arrival delay")
+```
+
+  
+  
+  Percentage change of Arrival delay over the month over years
+
+```{r}
+library(tidyverse)
+c <- t2 %>% group_by(year) %>% group_by(month) %>%
+  mutate(pct_change = (ARR_DELAY/lag(ARR_DELAY) - 1))
+```
+
+
+```{r}
+sc <- ts(data = c$pct_change, start = c(2014,12), end = c(2020,6), frequency = 12)
+
+autoplot(sc) + ylab("% change") + xlab("Year") + ggtitle("Percentage change of arrival delay over the years")
+```
+
+
+
+# 3. Forecast models
+
+
+- Seasonal plot
+```{r}
+ggseasonplot(s, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Arrival delay - Total Hr") +
+  ggtitle("Seasonal plot: Arrival delays in time from 2015-2020")
+```
+
+
+
+- Time seriese decomposition method - X13
+```{r}
+fit <- s %>% seas(x11="")
+autoplot(fit) +
+  ggtitle("X13 decomposition of arrival flight delays index")
+
+```
+
+
+- Moving Average 
+    Partition data
+```{r}
+train <- window(s, end = c(2017, 12))
+test <- window(s, start = c(2018, 1))
+
+train
+test
+```
+
+
+```{r}
+library(RColorBrewer)
+n <- length(s)
+m <- length(test)
+
+maorder <- c(2,3,5,7)
+frc <- array(NA,c(m,4),dimnames=list(time(test),paste0("MA",maorder)))
+
+for (i in 1:m){
+  fitsample <- s[1:(n-m+i-1)]
+  fitsample <- ts(fitsample,frequency=frequency(s),start=start(s))
+   for (j in 1:length(maorder)){
+     frc[i,j] <- mean(tail(fitsample,maorder[j]))}
+}
+
+frc <- ts(frc,frequency=frequency(test),start=start(test))
+cmp <- brewer.pal(4,"Set1")
+
+plot(s,ylab="GDP change")
+for (j in 1:length(maorder)){
+  lines(frc[,j],col=cmp[j])
+}
+legend("bottomleft",c("Data",colnames(frc)),col=c("black",cmp),lty=1)
+
+e <- matrix(rep(test,4),ncol=4) - frc
+RMSE <- sqrt(apply(e^2,2,mean))
+MAE <- apply(abs(e),2,mean)
+E <- rbind(RMSE,MAE)
+print(round(E,3))
+```
+
+
+- Holt-Winter's seasonal method
+
+  Additive & multiplicative model
+```{r}
+hw.add <- HoltWinters(train, seasonal = "additive")
+hw.add
+
+# multiplicative
+hw.mult <- HoltWinters(train, seasonal = "multiplicative")
+hw.mult
+
+checkresiduals(hw.add)
+checkresiduals(hw.mult)
+```
+
+  Forecast with hold out sample is 2.5 years (h = 30) and compare prediction accuracy
+
+```{r}
+for.add <- forecast(hw.add, h = 30)
+for.mult <- forecast(hw.mult, h = 30)
+
+accuracy(for.add, test)
+accuracy(for.mult, test)
+```
+
+  ets as universal exponential smoothing model function
+
+```{r}
+ets(train)
+```
+
+```{r}
+hw.mult2 <- ets(train, model = "ANN")
+for.mult2 <- forecast(hw.mult2, h = 30)
+
+accuracy(for.mult, test)
+accuracy(for.mult2, test)
+```
+
+  Run gamma and RMSE
+```{r}
+gamma <- seq(0.0001, 0.95, 0.01)
+
+RMSE <- NA
+
+for(i in seq_along(gamma)) {
+hw.opt <- ets(train, model = "ANN", gamma = gamma[i])
+future <- forecast(hw.opt, h = 30)
+RMSE[i] = accuracy(future, test)[2,2]
+}
+```
+
+
+  Graph gamma on forecast errors and with gamma minimum
+```{r}
+library(ggplot2)
+error <- data_frame(gamma, RMSE)
+minimum <- filter(error, RMSE == min(RMSE))
+minimum
+```
+```{r}
+ggplot(error, aes(gamma, RMSE)) +
+geom_line() +
+geom_point(data = minimum, color = "blue", size = 2) +
+ggtitle("gamma's impact on forecast errors",subtitle = "gamma = 0.6401 minimizes RMSE")  
+```
+
+  Forecast model is "A,N,N"
+
+  New exponential smothing model function with minimum gamma 
+```{r}
+hw.opt <- ets(train, model = "ANN", gamma = 0.6401)
+checkresiduals(hw.opt)
+
+for.mult3 <- forecast(hw.opt, h = 30)
+accuracy(for.mult2, test)
+accuracy(for.mult3, test)
+
+autoplot(s) +
+  autolayer(fitted.values(for.mult3), linetype = "dashed", show.legend = FALSE) +
+  autolayer(for.mult3, alpha = .50)
+```
+
+
+
+
+# 4. Conclusion
+
+a. Compare all the models 
+
+- Use RMSE/MAE from Moving Average
+
+```{r}
+e <- matrix(rep(test,4),ncol=4) - frc
+RMSE <- sqrt(apply(e^2,2,mean))
+MAE <- apply(abs(e),2,mean)
+E <- rbind(RMSE,MAE)
+print(round(E,3))
+```
+ 
+- Use RMSE/MAE from Holt-Winter 
+
+```{r}
+accuracy(for.mult3, test)
+```
+ 
+ 
+- Use AIC,BIC on tested data
+
+```{r}
+ets(test)
+```
+
+
+b. Provide a suggestion of the best model.
+
+- Holt-Winter model yields lowers RMSE & MAE than Moving Average. Holt-Winter RMSE and MAE for tested data is sequentially 17.72634 & 13.94696. Meanwhile, Moving Average RMSE(s) and MAE(s) for tested data are above 19.315 and 15600. RMSE is to measure how far off an actual value is from the mean. A good model should have better predictions than the naïve estimate of the mean for all predictions. Therefore, measure of variation (RMSE) should reduce the randomness better than the Standard Deviation. Thus, RMSE should be as smaller number as best. To conclude, in my opinion, Holt-Winter method is the best model
+
+c. Conclude findings: 
+
+- X13 time series decomposition may not be the best model but it is helpful to have a view of how data appears yearly, seasonally, its autocorrelation function (ACF) and its trend
+
+- MA is to smooth out the “noise” arrival delays over a specific of time by creating a constant updated of average arrival delays. Based on the graph above, I have created MA(2), MA(3), MA(5), MA(7) to reflect short term trend. The MAs forecast pretty well as they follow the pattern of original data set. But MA doubts me to consider the forecast result is high chance of accuracy
+
+- Holt-Winter seasonal method to capture seasonality in the data set and it also provides RMSE and MAE. To me, it is like the combination of X13 time series decompostion and MA. Therefore, I choose Holt-Winter method as my forecast model
